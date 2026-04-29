@@ -6,12 +6,14 @@ import { health } from './routes/health';
 import { queriesRouter } from './routes/queries';
 import { hostsRouter } from './routes/hosts';
 import { runsRouter } from './routes/runs';
+import { enrichmentsRouter } from './routes/enrichments';
 
 const api = new Hono<{ Bindings: Env }>()
   .route('/health', health)
   .route('/queries', queriesRouter)
   .route('/hosts', hostsRouter)
-  .route('/runs', runsRouter);
+  .route('/runs', runsRouter)
+  .route('/enrichments', enrichmentsRouter);
 
 const app = new Hono<{ Bindings: Env }>()
   .use('*', logger())

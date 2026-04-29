@@ -113,4 +113,17 @@ export const api = {
   runs: {
     get: (runId: string) => request<{ data: unknown }>(`/runs/${runId}`),
   },
+  enrichments: {
+    enqueue: (hostId: string, sources?: string[]) =>
+      request<{ data: { queued: boolean; hostId: string; sources: string[] } }>('/enrichments', {
+        method: 'POST',
+        body: JSON.stringify({ hostId, sources }),
+      }),
+    ingest: (token: string, payload: { hostId: string; source: string; data: Record<string, unknown> }) =>
+      request<{ data: { id: string } }>('/enrichments/ingest', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+  },
 };

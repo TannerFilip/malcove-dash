@@ -1,0 +1,54 @@
+name = "malcove-enrich-worker"
+main = "src/workers/enrichment.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# ---------------------------------------------------------------------------
+# Bindings — must match the Pages project bindings exactly
+# ---------------------------------------------------------------------------
+
+[[d1_databases]]
+binding = "DB"
+database_name = "malcove-dash"
+database_id = "11acd613-67d1-4ce5-ba61-5f24afa945ba"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "21f3e53ab12048a7ab60f4d5e8db6a8a"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "malcove-dash"
+
+# Producer binding so the Worker can self-enqueue (e.g. for retry logic)
+[[queues.producers]]
+binding = "ENRICHMENT_QUEUE"
+queue = "malcove-enrich"
+
+# ---------------------------------------------------------------------------
+# Queue consumer
+# ---------------------------------------------------------------------------
+
+[[queues.consumers]]
+queue = "malcove-enrich"
+max_batch_size = 10
+max_batch_timeout = 5       # seconds to wait before delivering a partial batch
+max_retries = 3
+dead_letter_queue = "malcove-enrich-dlq"   # create with: wrangler queues create malcove-enrich-dlq
+
+# ---------------------------------------------------------------------------
+# Cron triggers
+# ---------------------------------------------------------------------------
+
+[triggers]
+crons = ["0 2 * * *"]   # 02:00 UTC daily — re-enrich stale hosts
+
+# ---------------------------------------------------------------------------
+# Deploy commands (run from project root):
+#   wrangler deploy --config src/workers/wrangler.worker.toml
+#   wrangler tail  --config src/workers/wrangler.worker.toml
+#
+# Secrets (shared with the Pages project — set once, used by both):
+#   wrangler secret put SHODAN_API_KEY   --config src/workers/wrangler.worker.toml
+#   wrangler secret put ENRICHMENT_INGEST_TOKEN --config src/workers/wrangler.worker.toml
+# ---------------------------------------------------------------------------
