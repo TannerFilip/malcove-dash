@@ -26,6 +26,12 @@ function RootLayout() {
         >
           queries
         </Link>
+        <Link
+          to="/changes"
+          className="text-zinc-400 hover:text-zinc-100 [&.active]:text-zinc-100"
+        >
+          changes
+        </Link>
       </nav>
       <main className="flex-1 overflow-auto p-4">
         <Outlet />

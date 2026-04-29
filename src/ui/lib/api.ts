@@ -113,6 +113,18 @@ export const api = {
   runs: {
     get: (runId: string) => request<{ data: unknown }>(`/runs/${runId}`),
   },
+  changes: {
+    list: (params: { days?: number; page?: number; pageSize?: number } = {}) => {
+      const qs = new URLSearchParams();
+      if (params.days !== undefined) qs.set('days', String(params.days));
+      if (params.page !== undefined) qs.set('page', String(params.page));
+      if (params.pageSize !== undefined) qs.set('pageSize', String(params.pageSize));
+      const q = qs.toString();
+      return request<{ data: unknown[]; total: number; page: number; pageSize: number; days: number }>(
+        `/changes${q ? `?${q}` : ''}`,
+      );
+    },
+  },
   enrichments: {
     enqueue: (hostId: string, sources?: string[]) =>
       request<{ data: { queued: boolean; hostId: string; sources: string[] } }>('/enrichments', {

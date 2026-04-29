@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as QueriesRouteImport } from './routes/queries'
+import { Route as ChangesRouteImport } from './routes/changes'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as QueriesIdRouteImport } from './routes/queries.$id'
 import { Route as HostsIdRouteImport } from './routes/hosts.$id'
@@ -17,6 +18,11 @@ import { Route as HostsIdRouteImport } from './routes/hosts.$id'
 const QueriesRoute = QueriesRouteImport.update({
   id: '/queries',
   path: '/queries',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ChangesRoute = ChangesRouteImport.update({
+  id: '/changes',
+  path: '/changes',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -37,12 +43,14 @@ const HostsIdRoute = HostsIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/changes': typeof ChangesRoute
   '/queries': typeof QueriesRouteWithChildren
   '/hosts/$id': typeof HostsIdRoute
   '/queries/$id': typeof QueriesIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/changes': typeof ChangesRoute
   '/queries': typeof QueriesRouteWithChildren
   '/hosts/$id': typeof HostsIdRoute
   '/queries/$id': typeof QueriesIdRoute
@@ -50,20 +58,22 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/changes': typeof ChangesRoute
   '/queries': typeof QueriesRouteWithChildren
   '/hosts/$id': typeof HostsIdRoute
   '/queries/$id': typeof QueriesIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/queries' | '/hosts/$id' | '/queries/$id'
+  fullPaths: '/' | '/changes' | '/queries' | '/hosts/$id' | '/queries/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/queries' | '/hosts/$id' | '/queries/$id'
-  id: '__root__' | '/' | '/queries' | '/hosts/$id' | '/queries/$id'
+  to: '/' | '/changes' | '/queries' | '/hosts/$id' | '/queries/$id'
+  id: '__root__' | '/' | '/changes' | '/queries' | '/hosts/$id' | '/queries/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ChangesRoute: typeof ChangesRoute
   QueriesRoute: typeof QueriesRouteWithChildren
   HostsIdRoute: typeof HostsIdRoute
 }
@@ -75,6 +85,13 @@ declare module '@tanstack/react-router' {
       path: '/queries'
       fullPath: '/queries'
       preLoaderRoute: typeof QueriesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/changes': {
+      id: '/changes'
+      path: '/changes'
+      fullPath: '/changes'
+      preLoaderRoute: typeof ChangesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -114,6 +131,7 @@ const QueriesRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ChangesRoute: ChangesRoute,
   QueriesRoute: QueriesRouteWithChildren,
   HostsIdRoute: HostsIdRoute,
 }

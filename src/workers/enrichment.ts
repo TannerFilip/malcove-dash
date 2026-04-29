@@ -4,8 +4,10 @@
  *   1. Consumes messages from the `malcove-enrich` Queue and runs the requested
  *      enrichment jobs (rdns, shodan_host) for each host.
  *
- *   2. Runs a daily cron (configured in wrangler.worker.toml) that enqueues
- *      hosts which haven't been enriched in the last 7 days.
+ *   2. Cron at 02:00 UTC — enqueues hosts that haven't been enriched in 7+ days.
+ *
+ *   3. Cron at 04:00 UTC — re-fetches Shodan data for hosts in monitoring /
+ *      notable / reviewing states and records changes as new observations.
  *
  * Deploy separately from the Pages project:
  *   wrangler deploy --config src/workers/wrangler.worker.toml
@@ -13,12 +15,13 @@
 
 /// <reference path="../worker-env.d.ts" />
 
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { createDb } from '../db/client';
 import { hosts, enrichments } from '../db/schema';
 import { runRdns } from './jobs/rdns';
 import { runShodanHost } from './jobs/shodan-host';
+import { recheckHost } from './jobs/recheck';
 import type { EnrichmentMessage, EnrichmentSource } from '../shared/queue-types';
 import { ENRICHMENT_SOURCES } from '../shared/queue-types';
 
@@ -56,11 +59,11 @@ async function enrichHost(
 }
 
 // ---------------------------------------------------------------------------
-// Cron: enqueue stale hosts (no rdns enrichment in the last 7 days)
+// Cron A — 02:00 UTC: enqueue stale hosts for enrichment
 // ---------------------------------------------------------------------------
 
 const STALE_THRESHOLD_SECS = 7 * 24 * 60 * 60; // 7 days
-const CRON_BATCH_LIMIT = 100; // how many hosts to enqueue per cron tick
+const ENRICH_BATCH_LIMIT = 100;
 const DEFAULT_SOURCES: EnrichmentSource[] = ['rdns', 'shodan_host'];
 
 async function enqueueStaleHosts(env: Env): Promise<void> {
@@ -77,7 +80,7 @@ async function enqueueStaleHosts(env: Env): Promise<void> {
         WHERE source = 'rdns' AND fetched_at > ${cutoff}
       )`,
     )
-    .limit(CRON_BATCH_LIMIT);
+    .limit(ENRICH_BATCH_LIMIT);
 
   if (stale.length === 0) return;
 
@@ -94,6 +97,32 @@ async function enqueueStaleHosts(env: Env): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Cron B — 04:00 UTC: recheck monitored / notable / reviewing hosts
+// ---------------------------------------------------------------------------
+
+/** Triage states that warrant a nightly Shodan banner re-fetch. */
+const RECHECK_STATES = ['monitoring', 'notable', 'reviewing'] as const;
+/** Max hosts to recheck per cron tick (keeps execution within 30s CPU budget). */
+const RECHECK_BATCH_LIMIT = 50;
+
+async function recheckMonitoredHosts(env: Env): Promise<void> {
+  const db = createDb(env.DB);
+
+  const monitored = await db
+    .select({ id: hosts.id, ip: hosts.ip, port: hosts.port })
+    .from(hosts)
+    .where(inArray(hosts.triageState, [...RECHECK_STATES]))
+    .limit(RECHECK_BATCH_LIMIT);
+
+  if (monitored.length === 0) return;
+
+  // Sequential to keep memory/CPU usage predictable
+  for (const host of monitored) {
+    await recheckHost(db, env, host);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Worker export
 // ---------------------------------------------------------------------------
 
@@ -106,9 +135,7 @@ export default {
     const db = createDb(env.DB);
 
     for (const message of batch.messages) {
-      // Cast to our known shape — the queue only receives messages we send
       const body = message.body as EnrichmentMessage;
-      // Validate sources — drop unknown values so bad messages don't crash the worker
       const validSources = body.sources.filter((s): s is EnrichmentSource =>
         (ENRICHMENT_SOURCES as string[]).includes(s),
       );
@@ -121,17 +148,28 @@ export default {
         await enrichHost(db, env, { ...body, sources: validSources });
         message.ack();
       } catch {
-        // retry() puts the message back on the queue (up to max_retries times)
         message.retry();
       }
     }
   },
 
   /**
-   * Cron trigger — enqueues stale hosts for re-enrichment.
-   * Fires at 02:00 UTC daily (configured in wrangler.worker.toml).
+   * Cron handler — dispatches to the correct job based on the schedule expression.
+   *   "0 2 * * *"  → enqueue stale hosts for enrichment
+   *   "0 4 * * *"  → recheck monitored/notable/reviewing hosts
    */
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    await enqueueStaleHosts(env);
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    switch (controller.cron) {
+      case '0 2 * * *':
+        await enqueueStaleHosts(env);
+        break;
+      case '0 4 * * *':
+        await recheckMonitoredHosts(env);
+        break;
+      default:
+        // Unknown cron expression — run both to be safe
+        await enqueueStaleHosts(env);
+        await recheckMonitoredHosts(env);
+    }
   },
 } satisfies ExportedHandler<Env, EnrichmentMessage>;
