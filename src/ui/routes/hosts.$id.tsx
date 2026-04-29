@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState, useRef, useCallback } from 'react';
 import { useHostDetail, usePatchHost } from '../hooks/useHosts';
 import { useKeyboardNav } from '../hooks/useKeyboardNav';
+import { useEnqueueEnrichment } from '../hooks/useEnrichments';
 import { TriageBadge } from '../components/TriageBadge';
 import { JsonViewer } from '../components/JsonViewer';
 import { TRIAGE_STATES, type TriageState, type HostObservation } from '../../shared/types';
@@ -22,6 +23,7 @@ function HostDetailPage() {
   const { id } = Route.useParams();
   const { data: host, isLoading, error } = useHostDetail(id);
   const patch = usePatchHost();
+  const enrich = useEnqueueEnrichment(id);
   const notesRef = useRef<HTMLTextAreaElement>(null);
   const [activeTab, setActiveTab] = useState<Tab>('banner');
 
@@ -240,6 +242,27 @@ function HostDetailPage() {
         {/* Enrichments tab */}
         {activeTab === 'enrichments' && (
           <div className="space-y-2">
+            {/* Enrich button */}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => enrich.mutate(undefined)}
+                disabled={enrich.isPending}
+                className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-xs text-zinc-400 hover:border-zinc-500 hover:text-zinc-200 disabled:opacity-40"
+              >
+                {enrich.isPending ? 'queued…' : '⟳ enrich now'}
+              </button>
+              {enrich.isSuccess && (
+                <span className="text-xs text-zinc-500">
+                  queued · results appear in ~10s
+                </span>
+              )}
+              {enrich.isError && (
+                <span className="text-xs text-rose-400">
+                  {(enrich.error as Error).message}
+                </span>
+              )}
+            </div>
+
             {host.enrichments.length === 0 ? (
               <p className="text-xs text-zinc-500">No enrichments yet.</p>
             ) : (

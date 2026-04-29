@@ -7,6 +7,7 @@ import { createDb } from '../../db/client';
 import { queries, queryRuns, hosts, hostObservations, hostQueryMatches } from '../../db/schema';
 import { ShodanClient, type ShodanHost } from '../shodan';
 import { bannerHash } from '../diff';
+import { ENRICHMENT_SOURCES, type EnrichmentMessage } from '../../shared/queue-types';
 
 // ---------------------------------------------------------------------------
 // Zod schemas
@@ -77,15 +78,23 @@ function extractHostFields(match: Record<string, unknown>) {
   };
 }
 
+interface BatchResult {
+  newCount: number;
+  changedCount: number;
+  /** Hosts that are new or changed — candidates for enrichment. */
+  toEnrich: Array<{ hostId: string; ip: string; port: number }>;
+}
+
 /** Process a batch of Shodan matches against the DB, returning new/changed counts. */
 async function processBatch(
   db: ReturnType<typeof createDb>,
   batch: ShodanHost[],
   runId: string,
   now: number,
-): Promise<{ newCount: number; changedCount: number }> {
+): Promise<BatchResult> {
   let newCount = 0;
   let changedCount = 0;
+  const toEnrich: BatchResult['toEnrich'] = [];
 
   for (const match of batch) {
     const ip = match.ip_str;
@@ -147,6 +156,7 @@ async function processBatch(
 
     if (isNew) newCount++;
     if (isChanged) changedCount++;
+    if (isNew || isChanged) toEnrich.push({ hostId, ip, port });
 
     // Always append observation
     await db.insert(hostObservations).values({
@@ -167,7 +177,7 @@ async function processBatch(
       .onConflictDoNothing();
   }
 
-  return { newCount, changedCount };
+  return { newCount, changedCount, toEnrich };
 }
 
 // ---------------------------------------------------------------------------
@@ -375,12 +385,34 @@ queriesRouter.post('/:id/run', async (c) => {
     const BATCH = 25;
     let totalNew = 0;
     let totalChanged = 0;
+    const enrichQueue: Array<{ hostId: string; ip: string; port: number }> = [];
 
     for (let i = 0; i < allMatches.length; i += BATCH) {
       const batch = allMatches.slice(i, i + BATCH);
-      const { newCount, changedCount } = await processBatch(db, batch, runId, now);
+      const { newCount, changedCount, toEnrich } = await processBatch(db, batch, runId, now);
       totalNew += newCount;
       totalChanged += changedCount;
+      enrichQueue.push(...toEnrich);
+    }
+
+    // -----------------------------------------------------------------------
+    // Enqueue new/changed hosts for enrichment (rdns + full Shodan details)
+    // Queue.sendBatch limit: 100 messages per call
+    // -----------------------------------------------------------------------
+    if (enrichQueue.length > 0) {
+      const QUE_BATCH = 100;
+      for (let i = 0; i < enrichQueue.length; i += QUE_BATCH) {
+        await c.env.ENRICHMENT_QUEUE.sendBatch(
+          enrichQueue.slice(i, i + QUE_BATCH).map((h) => ({
+            body: {
+              hostId: h.hostId,
+              ip: h.ip,
+              port: h.port,
+              sources: [...ENRICHMENT_SOURCES],
+            } satisfies EnrichmentMessage,
+          })),
+        );
+      }
     }
 
     // Update run summary and query lastRunAt
