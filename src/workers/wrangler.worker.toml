@@ -1,5 +1,5 @@
 name = "malcove-enrich-worker"
-main = "src/workers/enrichment.ts"
+main = "./enrichment.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
