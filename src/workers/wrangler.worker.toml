@@ -41,7 +41,10 @@ dead_letter_queue = "malcove-enrich-dlq"   # create with: wrangler queues create
 # ---------------------------------------------------------------------------
 
 [triggers]
-crons = ["0 2 * * *"]   # 02:00 UTC daily — re-enrich stale hosts
+crons = [
+  "0 2 * * *",   # 02:00 UTC daily — re-enrich stale hosts (rdns, shodan_host)
+  "0 4 * * *",   # 04:00 UTC daily — recheck monitoring/notable/reviewing hosts
+]
 
 # ---------------------------------------------------------------------------
 # Deploy commands (run from project root):
