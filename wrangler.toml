@@ -1,0 +1,35 @@
+name = "malcove-dash"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "./dist"
+
+# CPU time limit for the main Pages Functions (API) — 30s default is fine
+# The queue consumer Worker gets its own limits block below
+
+[[d1_databases]]
+binding = "DB"
+database_name = "malcove-dash"
+database_id = "11acd613-67d1-4ce5-ba61-5f24afa945ba"
+migrations_dir = "src/db/migrations"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "21f3e53ab12048a7ab60f4d5e8db6a8a"             # paste output of: wrangler kv namespace create malcove-dash-kv
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "malcove-dash"                    # create with: wrangler r2 bucket create malcove-dash
+
+[[queues.producers]]
+binding = "ENRICHMENT_QUEUE"
+queue = "malcove-enrich"                        # create with: wrangler queues create malcove-enrich
+
+# NOTE: queues.consumers and triggers (crons) are NOT supported in Pages wrangler.toml.
+# The queue consumer Worker and cron trigger are defined in a separate wrangler config
+# that will be added in Phase 3 (src/workers/wrangler.worker.toml).
+
+[vars]
+# Non-secret config. Secrets go in wrangler secret put:
+#   wrangler secret put SHODAN_API_KEY
+#   wrangler secret put VALIDIN_API_KEY
+#   wrangler secret put ENRICHMENT_INGEST_TOKEN

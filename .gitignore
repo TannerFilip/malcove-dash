@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-types/
+
+# Wrangler local state (local D1, KV, R2, etc.)
+.wrangler/
+
+# Environment / secrets
+.env
+.env.*
+.dev.vars
+
+# drizzle-kit output (keep migrations, ignore studio artifacts)
+drizzle/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
