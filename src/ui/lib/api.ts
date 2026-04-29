@@ -51,6 +51,15 @@ export interface CreateQueryPayload {
   schedule?: string;
 }
 
+export interface RunResult {
+  runId: string;
+  totalCount: number;
+  shodanTotal: number;
+  newCount: number;
+  changedCount: number;
+  truncated: boolean;
+}
+
 export const api = {
   queries: {
     list: () => request<{ data: unknown[] }>('/queries'),
@@ -63,10 +72,25 @@ export const api = {
     delete: (id: string) =>
       request<{ data: { id: string } }>(`/queries/${id}`, { method: 'DELETE' }),
     run: (id: string) =>
-      request<{ data: { runId: string; totalCount: number; newCount: number; changedCount: number } }>(
-        `/queries/${id}/run`,
-        { method: 'POST' },
-      ),
+      request<{ data: RunResult }>(`/queries/${id}/run`, { method: 'POST' }),
+    runMatches: (
+      queryId: string,
+      runId: string,
+      params: { onlyChanged?: boolean; page?: number; pageSize?: number } = {},
+    ) => {
+      const qs = new URLSearchParams();
+      if (params.onlyChanged !== undefined) qs.set('onlyChanged', String(params.onlyChanged));
+      if (params.page !== undefined) qs.set('page', String(params.page));
+      if (params.pageSize !== undefined) qs.set('pageSize', String(params.pageSize));
+      const q = qs.toString();
+      return request<{
+        data: unknown[];
+        summary: { newCount: number; changedCount: number; unchangedCount: number; total: number };
+        total: number;
+        page: number;
+        pageSize: number;
+      }>(`/queries/${queryId}/runs/${runId}/matches${q ? `?${q}` : ''}`);
+    },
   },
   hosts: {
     list: (params: Record<string, string | number | undefined>) => {
@@ -85,5 +109,8 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify(payload),
       }),
+  },
+  runs: {
+    get: (runId: string) => request<{ data: unknown }>(`/runs/${runId}`),
   },
 };

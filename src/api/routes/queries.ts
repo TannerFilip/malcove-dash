@@ -5,7 +5,7 @@ import { eq, desc } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { createDb } from '../../db/client';
 import { queries, queryRuns, hosts, hostObservations, hostQueryMatches } from '../../db/schema';
-import { ShodanClient } from '../shodan';
+import { ShodanClient, type ShodanHost } from '../shodan';
 import { bannerHash } from '../diff';
 
 // ---------------------------------------------------------------------------
@@ -19,6 +19,21 @@ const CreateQuerySchema = z.object({
   tags: z.array(z.string()).optional().default([]),
   schedule: z.string().optional(),
 });
+
+const MatchesQuerySchema = z.object({
+  onlyChanged: z.string().optional(), // "true" | "false" | undefined
+  page: z.coerce.number().min(1).default(1),
+  pageSize: z.coerce.number().min(1).max(200).default(50),
+});
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Shodan returns 100 results per search page. */
+const PAGE_SIZE = 100;
+/** Maximum pages to fetch per run (= up to 1000 hosts). */
+const MAX_PAGES = 10;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,9 +53,7 @@ function extractHostFields(match: Record<string, unknown>) {
 
   const cert = firstSsl?.['cert'] as Record<string, unknown> | undefined;
   const certSerial = cert?.['serial'] != null ? String(cert['serial']) : null;
-  const certSubject = cert?.['subject']
-    ? JSON.stringify(cert['subject'])
-    : null;
+  const certSubject = cert?.['subject'] ? JSON.stringify(cert['subject']) : null;
   const certIssuer = cert?.['issuer'] ? JSON.stringify(cert['issuer']) : null;
   const certFp =
     (cert?.['fingerprint'] as Record<string, unknown> | undefined)?.['sha256'] as
@@ -62,6 +75,99 @@ function extractHostFields(match: Record<string, unknown>) {
     jarm,
     certFingerprint: certFp,
   };
+}
+
+/** Process a batch of Shodan matches against the DB, returning new/changed counts. */
+async function processBatch(
+  db: ReturnType<typeof createDb>,
+  batch: ShodanHost[],
+  runId: string,
+  now: number,
+): Promise<{ newCount: number; changedCount: number }> {
+  let newCount = 0;
+  let changedCount = 0;
+
+  for (const match of batch) {
+    const ip = match.ip_str;
+    const port = match.port;
+    const hostId = `${ip}:${port}`;
+    const fields = extractHostFields(match as unknown as Record<string, unknown>);
+
+    // Upsert host — preserve triageState/notes/snoozeUntil on conflict
+    await db
+      .insert(hosts)
+      .values({
+        id: hostId,
+        ip,
+        port,
+        asn: fields.asn,
+        country: fields.country,
+        org: fields.org,
+        hostname: fields.hostname,
+        certSerial: fields.certSerial,
+        certIssuer: fields.certIssuer,
+        certSubject: fields.certSubject,
+        jarm: fields.jarm,
+        faviconHash: null,
+        ja4x: null,
+        triageState: 'new',
+        snoozeUntil: null,
+        notes: null,
+        firstSeen: now,
+        lastSeen: now,
+      })
+      .onConflictDoUpdate({
+        target: hosts.id,
+        set: {
+          asn: fields.asn,
+          country: fields.country,
+          org: fields.org,
+          hostname: fields.hostname,
+          certSerial: fields.certSerial,
+          certIssuer: fields.certIssuer,
+          certSubject: fields.certSubject,
+          jarm: fields.jarm,
+          lastSeen: now,
+        },
+      });
+
+    // Compute banner hash
+    const hash = await bannerHash(match);
+
+    // Check most recent prior observation
+    const [prior] = await db
+      .select({ bannerHash: hostObservations.bannerHash })
+      .from(hostObservations)
+      .where(eq(hostObservations.hostId, hostId))
+      .orderBy(desc(hostObservations.observedAt))
+      .limit(1);
+
+    const isNew = prior === undefined;
+    const isChanged = !isNew && prior.bannerHash !== hash;
+
+    if (isNew) newCount++;
+    if (isChanged) changedCount++;
+
+    // Always append observation
+    await db.insert(hostObservations).values({
+      id: nanoid(),
+      hostId,
+      runId,
+      observedAt: now,
+      banner: match as unknown as Record<string, unknown>,
+      bannerHash: hash,
+      certFingerprint: fields.certFingerprint,
+      source: 'shodan',
+    });
+
+    // Write match row (ignore conflict — idempotent re-run)
+    await db
+      .insert(hostQueryMatches)
+      .values({ hostId, runId, isNew, isChanged })
+      .onConflictDoNothing();
+  }
+
+  return { newCount, changedCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +227,98 @@ queriesRouter.delete('/:id', async (c) => {
   return c.json({ data: { id } });
 });
 
-/** POST /api/queries/:id/run — execute the query against Shodan */
+/**
+ * GET /api/queries/:id/runs/:runId/matches
+ * Returns paginated hosts for a run with isNew/isChanged flags and summary counts.
+ * ?onlyChanged=true — filter to new + changed hosts only.
+ */
+queriesRouter.get('/:id/runs/:runId/matches', zValidator('query', MatchesQuerySchema), async (c) => {
+  const db = createDb(c.env.DB);
+  const queryId = c.req.param('id');
+  const runId = c.req.param('runId');
+  const { onlyChanged: onlyChangedStr, page, pageSize } = c.req.valid('query');
+  const onlyChanged = onlyChangedStr === 'true';
+
+  // Verify run belongs to this query
+  const [run] = await db
+    .select()
+    .from(queryRuns)
+    .where(eq(queryRuns.id, runId));
+
+  if (!run || run.queryId !== queryId) {
+    return c.json({ error: { code: 'NOT_FOUND', message: 'Run not found' } }, 404);
+  }
+
+  // Fetch all match records for this run
+  const allMatches = await db
+    .select({
+      hostId: hostQueryMatches.hostId,
+      isNew: hostQueryMatches.isNew,
+      isChanged: hostQueryMatches.isChanged,
+    })
+    .from(hostQueryMatches)
+    .where(eq(hostQueryMatches.runId, runId));
+
+  const newCount = allMatches.filter((m) => m.isNew).length;
+  const changedCount = allMatches.filter((m) => m.isChanged).length;
+  const total = allMatches.length;
+  const unchangedCount = total - newCount - changedCount;
+
+  // Apply onlyChanged filter
+  const filteredMatches = onlyChanged
+    ? allMatches.filter((m) => m.isNew || m.isChanged)
+    : allMatches;
+
+  if (filteredMatches.length === 0) {
+    return c.json({
+      data: [],
+      summary: { newCount, changedCount, unchangedCount, total },
+      total: 0,
+      page,
+      pageSize,
+    });
+  }
+
+  // Build a map for flag lookup
+  const flagMap = new Map(allMatches.map((m) => [m.hostId, { isNew: m.isNew, isChanged: m.isChanged }]));
+
+  // Paginate the filtered host IDs
+  const offset = (page - 1) * pageSize;
+  const pageIds = filteredMatches.slice(offset, offset + pageSize).map((m) => m.hostId);
+
+  // Fetch host rows for this page
+  // D1 parameter limit: fetch one-by-one if pageIds is small enough; for up to 50 it's fine
+  const hostRows = await Promise.all(
+    pageIds.map((hostId) =>
+      db
+        .select()
+        .from(hosts)
+        .where(eq(hosts.id, hostId))
+        .then((rows) => rows[0]),
+    ),
+  );
+
+  const data = hostRows
+    .filter((h): h is NonNullable<typeof h> => h !== undefined)
+    .map((h) => ({
+      ...h,
+      isNew: flagMap.get(h.id)?.isNew ?? false,
+      isChanged: flagMap.get(h.id)?.isChanged ?? false,
+    }));
+
+  return c.json({
+    data,
+    summary: { newCount, changedCount, unchangedCount, total },
+    total: filteredMatches.length,
+    page,
+    pageSize,
+  });
+});
+
+/**
+ * POST /api/queries/:id/run — execute the query against Shodan.
+ * Fetches up to MAX_PAGES pages (up to 1000 hosts total).
+ */
 queriesRouter.post('/:id/run', async (c) => {
   const db = createDb(c.env.DB);
   const id = c.req.param('id');
@@ -131,7 +328,7 @@ queriesRouter.post('/:id/run', async (c) => {
 
   if (query.source !== 'shodan') {
     return c.json(
-      { error: { code: 'NOT_IMPLEMENTED', message: 'Only Shodan queries supported in Phase 1' } },
+      { error: { code: 'NOT_IMPLEMENTED', message: 'Only Shodan queries supported in Phase 1-2' } },
       501,
     );
   }
@@ -152,109 +349,47 @@ queriesRouter.post('/:id/run', async (c) => {
 
   try {
     const shodan = new ShodanClient(c.env.SHODAN_API_KEY, c.env.KV);
-
-    // Fetch page 1 (Phase 2 adds pagination loop)
-    const result = await shodan.searchHosts(query.queryString, { page: 1 });
-    const matches = result.matches;
-
-    let newCount = 0;
-    let changedCount = 0;
     const now = Math.floor(Date.now() / 1000);
 
-    // Process in batches of 25 to respect D1's 100-parameter limit
+    // -----------------------------------------------------------------------
+    // Paginated fetch — up to MAX_PAGES × 100 = 1000 hosts
+    // -----------------------------------------------------------------------
+    let allMatches: ShodanHost[] = [];
+    let shodanTotal = 0;
+
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const result = await shodan.searchHosts(query.queryString, { page });
+
+      if (page === 1) shodanTotal = result.total;
+      allMatches.push(...result.matches);
+
+      // Stop if we've collected all results or hit a partial (last) page
+      if (result.matches.length < PAGE_SIZE || allMatches.length >= shodanTotal) break;
+    }
+
+    const truncated = shodanTotal > allMatches.length;
+
+    // -----------------------------------------------------------------------
+    // Process in batches of 25 — D1 has a ~100-parameter limit per statement
+    // -----------------------------------------------------------------------
     const BATCH = 25;
+    let totalNew = 0;
+    let totalChanged = 0;
 
-    for (let i = 0; i < matches.length; i += BATCH) {
-      const batch = matches.slice(i, i + BATCH);
-
-      for (const match of batch) {
-        const ip = match.ip_str;
-        const port = match.port;
-        const hostId = `${ip}:${port}`;
-        const fields = extractHostFields(match as unknown as Record<string, unknown>);
-
-        // Upsert host — preserve triageState/notes/snoozeUntil on conflict
-        await db
-          .insert(hosts)
-          .values({
-            id: hostId,
-            ip,
-            port,
-            asn: fields.asn,
-            country: fields.country,
-            org: fields.org,
-            hostname: fields.hostname,
-            certSerial: fields.certSerial,
-            certIssuer: fields.certIssuer,
-            certSubject: fields.certSubject,
-            jarm: fields.jarm,
-            faviconHash: null,
-            ja4x: null,
-            triageState: 'new',
-            snoozeUntil: null,
-            notes: null,
-            firstSeen: now,
-            lastSeen: now,
-          })
-          .onConflictDoUpdate({
-            target: hosts.id,
-            set: {
-              asn: fields.asn,
-              country: fields.country,
-              org: fields.org,
-              hostname: fields.hostname,
-              certSerial: fields.certSerial,
-              certIssuer: fields.certIssuer,
-              certSubject: fields.certSubject,
-              jarm: fields.jarm,
-              lastSeen: now,
-            },
-          });
-
-        // Compute banner hash
-        const hash = await bannerHash(match);
-
-        // Check most recent prior observation
-        const [prior] = await db
-          .select({ bannerHash: hostObservations.bannerHash })
-          .from(hostObservations)
-          .where(eq(hostObservations.hostId, hostId))
-          .orderBy(desc(hostObservations.observedAt))
-          .limit(1);
-
-        const isNew = prior === undefined;
-        const isChanged = !isNew && prior.bannerHash !== hash;
-
-        if (isNew) newCount++;
-        if (isChanged) changedCount++;
-
-        // Always append observation
-        await db.insert(hostObservations).values({
-          id: nanoid(),
-          hostId,
-          runId,
-          observedAt: now,
-          banner: match as unknown as Record<string, unknown>,
-          bannerHash: hash,
-          certFingerprint: fields.certFingerprint,
-          source: 'shodan',
-        });
-
-        // Write match row (ignore conflict — idempotent re-run)
-        await db
-          .insert(hostQueryMatches)
-          .values({ hostId, runId, isNew, isChanged })
-          .onConflictDoNothing();
-      }
+    for (let i = 0; i < allMatches.length; i += BATCH) {
+      const batch = allMatches.slice(i, i + BATCH);
+      const { newCount, changedCount } = await processBatch(db, batch, runId, now);
+      totalNew += newCount;
+      totalChanged += changedCount;
     }
 
     // Update run summary and query lastRunAt
     await db
       .update(queryRuns)
       .set({
-        totalCount: matches.length,
-        newCount,
-        changedCount,
+        totalCount: allMatches.length,
+        newCount: totalNew,
+        changedCount: totalChanged,
       })
       .where(eq(queryRuns.id, runId));
 
@@ -266,9 +401,11 @@ queriesRouter.post('/:id/run', async (c) => {
     return c.json({
       data: {
         runId,
-        totalCount: matches.length,
-        newCount,
-        changedCount,
+        totalCount: allMatches.length,
+        shodanTotal,
+        newCount: totalNew,
+        changedCount: totalChanged,
+        truncated,
       },
     });
   } catch (err) {

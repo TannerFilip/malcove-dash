@@ -15,6 +15,7 @@ const HostsQuerySchema = z.object({
   asn: z.coerce.number().optional(),
   runId: z.string().optional(),
   tag: z.string().optional(),
+  onlyChanged: z.string().optional(), // "true" → filter to isNew | isChanged
   page: z.coerce.number().min(1).default(1),
   pageSize: z.coerce.number().min(1).max(200).default(50),
 });
@@ -34,7 +35,8 @@ const hostsRouter = new Hono<{ Bindings: Env }>();
 /** GET /api/hosts — paginated, filterable host list */
 hostsRouter.get('/', zValidator('query', HostsQuerySchema), async (c) => {
   const db = createDb(c.env.DB);
-  const { triageState, asn, runId, tag, page, pageSize } = c.req.valid('query');
+  const { triageState, asn, runId, tag, onlyChanged: onlyChangedStr, page, pageSize } = c.req.valid('query');
+  const onlyChanged = onlyChangedStr === 'true';
   const offset = (page - 1) * pageSize;
 
   // Build where conditions
@@ -47,17 +49,38 @@ hostsRouter.get('/', zValidator('query', HostsQuerySchema), async (c) => {
     conditions.push(eq(hosts.asn, asn));
   }
 
-  // Filter by runId via hostQueryMatches join
+  // Match-flag map for enriching response rows (populated when runId is set)
+  let flagMap: Map<string, { isNew: boolean; isChanged: boolean }> | null = null;
+
+  // Filter by runId via hostQueryMatches
   if (runId) {
-    const matchedIds = await db
-      .select({ hostId: hostQueryMatches.hostId })
+    const allMatches = await db
+      .select({
+        hostId: hostQueryMatches.hostId,
+        isNew: hostQueryMatches.isNew,
+        isChanged: hostQueryMatches.isChanged,
+      })
       .from(hostQueryMatches)
       .where(eq(hostQueryMatches.runId, runId));
-    const ids = matchedIds.map((m) => m.hostId);
-    if (ids.length === 0) {
+
+    if (allMatches.length === 0) {
       return c.json({ data: [], total: 0, page, pageSize });
     }
+
+    // Apply onlyChanged filter if requested
+    const filteredMatches = onlyChanged
+      ? allMatches.filter((m) => m.isNew || m.isChanged)
+      : allMatches;
+
+    if (filteredMatches.length === 0) {
+      return c.json({ data: [], total: 0, page, pageSize });
+    }
+
+    const ids = filteredMatches.map((m) => m.hostId);
     conditions.push(inArray(hosts.id, ids));
+
+    // Build flag map from the full (unfiltered) match set for badge rendering
+    flagMap = new Map(allMatches.map((m) => [m.hostId, { isNew: m.isNew, isChanged: m.isChanged }]));
   }
 
   // Filter by tag name via hostTags join
@@ -93,7 +116,16 @@ hostsRouter.get('/', zValidator('query', HostsQuerySchema), async (c) => {
     .limit(pageSize)
     .offset(offset);
 
-  return c.json({ data: rows, total: count, page, pageSize });
+  // Attach isNew/isChanged flags when filtering by run
+  const data = flagMap
+    ? rows.map((r) => ({
+        ...r,
+        isNew: flagMap!.get(r.id)?.isNew ?? false,
+        isChanged: flagMap!.get(r.id)?.isChanged ?? false,
+      }))
+    : rows;
+
+  return c.json({ data, total: count, page, pageSize });
 });
 
 /** GET /api/hosts/:id — full detail with observations and enrichments */

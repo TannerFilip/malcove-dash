@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { useHostList } from '../hooks/useHosts';
 import { usePatchHost } from '../hooks/useHosts';
 import { useKeyboardNav } from '../hooks/useKeyboardNav';
+import { useRunSummary } from '../hooks/useQueries';
 import { KeyboardHelp } from '../components/KeyboardHelp';
 import { TriageBadge } from '../components/TriageBadge';
-import { TRIAGE_STATES, type Host, type TriageState } from '../../shared/types';
+import { TRIAGE_STATES, type TriageState } from '../../shared/types';
+import type { HostWithFlags } from '../hooks/useHosts';
 
 // ---------------------------------------------------------------------------
 // Search params schema
@@ -17,6 +19,8 @@ const HostSearchSchema = z.object({
   runId: z.string().optional(),
   asn: z.coerce.number().optional(),
   page: z.coerce.number().default(1),
+  /** "false" means "show all"; absent/anything-else means "new+changed only" when runId is set */
+  onlyChanged: z.string().optional(),
 });
 
 export const Route = createFileRoute('/')({
@@ -35,19 +39,28 @@ function HostsPage() {
   const [showHelp, setShowHelp] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // When a run filter is active, default to showing only new+changed hosts
+  const showOnlyChanged = search.runId
+    ? search.onlyChanged !== 'false'
+    : false;
+
   const { data, isLoading } = useHostList({
     triageState: search.triageState,
     runId: search.runId,
     asn: search.asn,
+    onlyChanged: search.runId ? showOnlyChanged : undefined,
     page: search.page,
     pageSize: 50,
   });
+
+  // Fetch run summary for pill counts when a run filter is active
+  const { data: runSummary } = useRunSummary(search.runId);
 
   const hosts = data?.data ?? [];
   const total = data?.total ?? 0;
   const patch = usePatchHost();
 
-  const selectedHost: Host | undefined = hosts[selectedIdx];
+  const selectedHost: HostWithFlags | undefined = hosts[selectedIdx];
 
   const handleTriage = useCallback(
     (state: TriageState) => {
@@ -68,6 +81,12 @@ function HostsPage() {
 
   function setFilter(key: string, value: string | undefined) {
     void navigate({ search: (prev) => ({ ...prev, [key]: value, page: 1 }) });
+  }
+
+  function toggleOnlyChanged() {
+    // When toggling off (show all), set onlyChanged=false explicitly.
+    // When toggling on (back to default), remove the param.
+    setFilter('onlyChanged', showOnlyChanged ? 'false' : undefined);
   }
 
   return (
@@ -94,14 +113,50 @@ function HostsPage() {
             </option>
           ))}
         </select>
+
+        {/* Run filter pill */}
         {search.runId && (
           <span className="flex items-center gap-1 rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
             run: {search.runId.slice(0, 8)}…
-            <button onClick={() => setFilter('runId', undefined)} className="text-zinc-600 hover:text-zinc-300">
+            <button
+              onClick={() => {
+                void navigate({
+                  search: (prev) => {
+                    const { runId: _, onlyChanged: __, ...rest } = prev;
+                    return rest;
+                  },
+                });
+              }}
+              className="text-zinc-600 hover:text-zinc-300"
+            >
               ✕
             </button>
           </span>
         )}
+
+        {/* Run summary pill — new · changed · unchanged counts + onlyChanged toggle */}
+        {search.runId && runSummary && (
+          <div className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-900 px-2.5 py-0.5 text-xs">
+            <span className="font-medium text-sky-400">{runSummary.newCount ?? 0} new</span>
+            <span className="text-zinc-700">·</span>
+            <span className="font-medium text-yellow-400">{runSummary.changedCount ?? 0} changed</span>
+            <span className="text-zinc-700">·</span>
+            <span className="text-zinc-500">
+              {(runSummary.totalCount ?? 0) -
+                (runSummary.newCount ?? 0) -
+                (runSummary.changedCount ?? 0)}{' '}
+              unchanged
+            </span>
+            <span className="mx-1 text-zinc-700">|</span>
+            <button
+              onClick={toggleOnlyChanged}
+              className="text-zinc-400 underline decoration-dotted hover:text-zinc-200"
+            >
+              {showOnlyChanged ? 'show all' : 'new+changed only'}
+            </button>
+          </div>
+        )}
+
         <span className="ml-auto text-xs text-zinc-600">
           {total} host{total !== 1 ? 's' : ''} · press ? for shortcuts
         </span>
@@ -170,7 +225,7 @@ function HostRow({
   selected,
   onClick,
 }: {
-  host: Host;
+  host: HostWithFlags;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -190,6 +245,16 @@ function HostRow({
         >
           {host.ip}:{host.port}
         </Link>
+        {host.isNew && (
+          <span className="ml-1.5 rounded bg-sky-900/60 px-1 py-0.5 text-[10px] font-medium text-sky-400">
+            new
+          </span>
+        )}
+        {host.isChanged && (
+          <span className="ml-1.5 rounded bg-yellow-900/60 px-1 py-0.5 text-[10px] font-medium text-yellow-400">
+            chg
+          </span>
+        )}
         {host.hostname && (
           <span className="ml-2 text-zinc-600">{host.hostname}</span>
         )}

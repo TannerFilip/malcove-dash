@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, type CreateQueryPayload } from '../lib/api';
+import { api, type CreateQueryPayload, type RunResult } from '../lib/api';
 import type { Query, QueryRun } from '../../shared/types';
 
 // Response shapes — API returns `data` wrappers
@@ -46,10 +46,23 @@ export function useDeleteQuery() {
 export function useRunQuery(id: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.queries.run(id),
+    mutationFn: (): Promise<{ data: RunResult }> => api.queries.run(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['queries', id] });
       qc.invalidateQueries({ queryKey: ['hosts'] });
     },
+  });
+}
+
+/** Fetch the summary (counts, status) of a single run by runId. */
+export function useRunSummary(runId?: string) {
+  return useQuery({
+    queryKey: ['runs', runId],
+    queryFn: async () => {
+      if (!runId) return null;
+      const res = await api.runs.get(runId);
+      return res.data as QueryRun;
+    },
+    enabled: !!runId,
   });
 }

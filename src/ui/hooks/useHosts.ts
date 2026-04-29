@@ -7,8 +7,15 @@ export interface HostFilters {
   asn?: number | undefined;
   runId?: string | undefined;
   tag?: string | undefined;
+  onlyChanged?: boolean | undefined;
   page?: number | undefined;
   pageSize?: number | undefined;
+}
+
+/** Host with optional diff flags — present when the list is filtered by runId. */
+export interface HostWithFlags extends Host {
+  isNew?: boolean;
+  isChanged?: boolean;
 }
 
 interface HostDetail extends Host {
@@ -21,9 +28,19 @@ export function useHostList(filters: HostFilters = {}) {
   return useQuery({
     queryKey: ['hosts', filters],
     queryFn: async () => {
-      const res = await api.hosts.list(filters as Record<string, string | number | undefined>);
+      // Build explicit string/number param map to satisfy api.hosts.list signature
+      const params: Record<string, string | number | undefined> = {};
+      if (filters.triageState) params['triageState'] = filters.triageState;
+      if (filters.asn !== undefined) params['asn'] = filters.asn;
+      if (filters.runId) params['runId'] = filters.runId;
+      if (filters.tag) params['tag'] = filters.tag;
+      if (filters.onlyChanged !== undefined) params['onlyChanged'] = filters.onlyChanged ? 'true' : 'false';
+      if (filters.page !== undefined) params['page'] = filters.page;
+      if (filters.pageSize !== undefined) params['pageSize'] = filters.pageSize;
+
+      const res = await api.hosts.list(params);
       return {
-        data: res.data as Host[],
+        data: res.data as HostWithFlags[],
         total: res.total,
         page: res.page,
         pageSize: res.pageSize,
