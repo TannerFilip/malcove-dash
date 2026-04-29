@@ -1,10 +1,10 @@
 /**
  * Cloudflare Pages Functions catch-all route for /api/*
  *
- * Hono is mounted here and handles all routing internally.
- * The Pages Functions runtime passes an EventContext; we extract the
- * underlying Request and Env and hand off to Hono's fetch handler.
+ * Pages Functions passes an EventContext, not a bare Request — so we must use
+ * Hono's handle() adapter which unwraps the context before dispatching.
  */
+import { handle } from 'hono/cloudflare-pages';
 import { app } from '../../src/api/app';
 
-export const onRequest = app.fetch;
+export const onRequest = handle(app);

@@ -3,6 +3,13 @@ import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { errorHandler, devAccessShim } from './middleware';
 import { health } from './routes/health';
+import { queriesRouter } from './routes/queries';
+import { hostsRouter } from './routes/hosts';
+
+const api = new Hono<{ Bindings: Env }>()
+  .route('/health', health)
+  .route('/queries', queriesRouter)
+  .route('/hosts', hostsRouter);
 
 const app = new Hono<{ Bindings: Env }>()
   .use('*', logger())
@@ -11,18 +18,12 @@ const app = new Hono<{ Bindings: Env }>()
     '*',
     cors({
       origin: (_origin, c) => {
-        // In dev, allow all. In production, Pages serves API and UI from the
-        // same origin so CORS isn't required, but this keeps options open.
         return c.req.header('origin') ?? '*';
       },
       credentials: true,
     }),
   )
-  // Sub-routers
-  .route('/health', health)
-  // Future routes mounted here (Phase 1+)
-
-  // Global error handler
+  .route('/api', api)
   .onError(errorHandler);
 
 export { app };
