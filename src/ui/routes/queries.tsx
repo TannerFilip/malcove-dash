@@ -1,6 +1,7 @@
 import { createFileRoute, Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { useState } from 'react';
 import { useQueryList, useCreateQuery, useDeleteQuery } from '../hooks/useQueries';
+import { useQuota } from '../hooks/useQuota';
 import type { Query } from '../../shared/types';
 
 export const Route = createFileRoute('/queries')({
@@ -17,18 +18,51 @@ function QueriesLayout() {
 
 function QueriesPage() {
   const { data: queries = [], isLoading } = useQueryList();
+  const { data: quota } = useQuota();
   const [showForm, setShowForm] = useState(false);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-sm font-semibold text-zinc-100">Saved Queries</h1>
-        <button
-          onClick={() => setShowForm((p) => !p)}
-          className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
-        >
-          {showForm ? 'cancel' : '+ new query'}
-        </button>
+        <div className="flex items-center gap-4">
+          {/* Quota display */}
+          {quota && (
+            <div className="flex items-center gap-3 text-xs text-zinc-500">
+              <span>
+                <span className="text-zinc-300">{quota.data.queriesUsed}</span>
+                {' '}queries run · {quota.data.month}
+              </span>
+              {quota.data.shodan && (
+                <>
+                  <span className="text-zinc-700">·</span>
+                  <span title="Remaining Shodan query credits">
+                    <span className="text-zinc-300">{quota.data.shodan.query_credits}</span>
+                    {' '}credits left
+                  </span>
+                  {quota.data.shodan.scan_credits != null && (
+                    <>
+                      <span className="text-zinc-700">·</span>
+                      <span title="Remaining Shodan scan credits">
+                        <span className="text-zinc-300">{quota.data.shodan.scan_credits}</span>
+                        {' '}scan credits
+                      </span>
+                    </>
+                  )}
+                  <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-500">
+                    {quota.data.shodan.plan}
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+          <button
+            onClick={() => setShowForm((p) => !p)}
+            className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
+          >
+            {showForm ? 'cancel' : '+ new query'}
+          </button>
+        </div>
       </div>
 
       {showForm && <CreateQueryForm onDone={() => setShowForm(false)} />}
