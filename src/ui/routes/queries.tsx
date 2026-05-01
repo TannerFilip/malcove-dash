@@ -1,11 +1,19 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute, Link, Outlet, useRouterState } from '@tanstack/react-router';
 import { useState } from 'react';
 import { useQueryList, useCreateQuery, useDeleteQuery } from '../hooks/useQueries';
 import type { Query } from '../../shared/types';
 
 export const Route = createFileRoute('/queries')({
-  component: QueriesPage,
+  component: QueriesLayout,
 });
+
+/** Layout: render the detail page when on /queries/$id, list otherwise. */
+function QueriesLayout() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  // Anything deeper than /queries is a detail page
+  if (pathname !== '/queries') return <Outlet />;
+  return <QueriesPage />;
+}
 
 function QueriesPage() {
   const { data: queries = [], isLoading } = useQueryList();
