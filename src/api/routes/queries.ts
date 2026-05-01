@@ -5,7 +5,7 @@ import { eq, desc } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { createDb } from '../../db/client';
 import { queries, queryRuns, hosts, hostObservations, hostQueryMatches } from '../../db/schema';
-import { ShodanClient, type ShodanHost } from '../shodan';
+import { ShodanClient, type ShodanSearchMatch } from '../shodan';
 import { bannerHash } from '../diff';
 import { ENRICHMENT_SOURCES, type EnrichmentMessage } from '../../shared/queue-types';
 
@@ -40,35 +40,28 @@ const MAX_PAGES = 10;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract cert/jarm fields from a Shodan match for denormalised host columns. */
-function extractHostFields(match: Record<string, unknown>) {
+/** Extract cert/jarm fields from a Shodan search match for denormalised host columns.
+ *  In search results each match is a single service — SSL is at the top level. */
+function extractHostFields(match: ShodanSearchMatch) {
   // ASN comes as "AS12345" — strip the prefix
-  const asnRaw = match['asn'] as string | undefined;
+  const asnRaw = match.asn;
   const asn = asnRaw ? parseInt(asnRaw.replace(/^AS/i, ''), 10) : null;
 
-  // Prefer service-level SSL, fall back to host-level
-  const services = (match['data'] as Array<Record<string, unknown>> | undefined) ?? [];
-  const firstSsl =
-    (services.find((s) => s['ssl'])?.['ssl'] as Record<string, unknown> | undefined) ??
-    (match['ssl'] as Record<string, unknown> | undefined);
+  // SSL is directly on the search match (not nested in a services array)
+  const ssl = match.ssl;
+  const cert = ssl?.cert;
+  const certSerial = cert?.serial != null ? String(cert.serial) : null;
+  const certSubject = cert?.subject ? JSON.stringify(cert.subject) : null;
+  const certIssuer = cert?.issuer ? JSON.stringify(cert.issuer) : null;
+  const certFp = cert?.fingerprint?.sha256 ?? null;
+  const jarm = ssl?.jarm ?? null;
 
-  const cert = firstSsl?.['cert'] as Record<string, unknown> | undefined;
-  const certSerial = cert?.['serial'] != null ? String(cert['serial']) : null;
-  const certSubject = cert?.['subject'] ? JSON.stringify(cert['subject']) : null;
-  const certIssuer = cert?.['issuer'] ? JSON.stringify(cert['issuer']) : null;
-  const certFp =
-    (cert?.['fingerprint'] as Record<string, unknown> | undefined)?.['sha256'] as
-      | string
-      | undefined ?? null;
-  const jarm = firstSsl?.['jarm'] as string | undefined ?? null;
-
-  const hostnames = match['hostnames'] as string[] | undefined;
-  const hostname = hostnames?.[0] ?? null;
+  const hostname = match.hostnames?.[0] ?? null;
 
   return {
     asn: Number.isNaN(asn) ? null : asn,
-    country: (match['country_code'] as string | undefined) ?? null,
-    org: (match['org'] as string | undefined) ?? null,
+    country: match.country_code ?? null,
+    org: match.org ?? null,
     hostname,
     certSerial,
     certIssuer,
@@ -88,7 +81,7 @@ interface BatchResult {
 /** Process a batch of Shodan matches against the DB, returning new/changed counts. */
 async function processBatch(
   db: ReturnType<typeof createDb>,
-  batch: ShodanHost[],
+  batch: ShodanSearchMatch[],
   runId: string,
   now: number,
 ): Promise<BatchResult> {
@@ -100,7 +93,7 @@ async function processBatch(
     const ip = match.ip_str;
     const port = match.port;
     const hostId = `${ip}:${port}`;
-    const fields = extractHostFields(match as unknown as Record<string, unknown>);
+    const fields = extractHostFields(match);
 
     // Upsert host — preserve triageState/notes/snoozeUntil on conflict
     await db
@@ -364,7 +357,7 @@ queriesRouter.post('/:id/run', async (c) => {
     // -----------------------------------------------------------------------
     // Paginated fetch — up to MAX_PAGES × 100 = 1000 hosts
     // -----------------------------------------------------------------------
-    let allMatches: ShodanHost[] = [];
+    let allMatches: ShodanSearchMatch[] = [];
     let shodanTotal = 0;
 
     for (let page = 1; page <= MAX_PAGES; page++) {

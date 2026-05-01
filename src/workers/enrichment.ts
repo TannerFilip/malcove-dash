@@ -154,6 +154,14 @@ export default {
   },
 
   /**
+   * fetch handler — required by wrangler dev so /__scheduled works for local testing.
+   * This Worker is not reachable via HTTP in production (no route binding).
+   */
+  fetch(): Response {
+    return new Response('malcove-enrich-worker', { status: 200 });
+  },
+
+  /**
    * Cron handler — dispatches to the correct job based on the schedule expression.
    *   "0 2 * * *"  → enqueue stale hosts for enrichment
    *   "0 4 * * *"  → recheck monitored/notable/reviewing hosts

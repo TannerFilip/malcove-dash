@@ -4,54 +4,77 @@ import { z } from 'zod';
 // Zod schemas for Shodan API responses
 // ---------------------------------------------------------------------------
 
+// Shared SSL sub-schema used in both search matches and host detail
+// Use .nullish() throughout — Shodan sends null for missing fields, not undefined
+const ShodanSslSchema = z.object({
+  cert: z.object({
+    serial: z.number().nullish(),
+    subject: z.record(z.string(), z.unknown()).nullish(),
+    issuer: z.record(z.string(), z.unknown()).nullish(),
+    fingerprint: z.object({ sha256: z.string().nullish() }).nullish(),
+  }).nullish(),
+  jarm: z.string().nullish(),
+}).nullish();
+
+// Shared HTTP sub-schema
+const ShodanHttpSchema = z.object({
+  title: z.string().nullish(),
+  server: z.string().nullish(),
+  favicon: z.object({ hash: z.number().nullish() }).nullish(),
+}).nullish();
+
+// ---------------------------------------------------------------------------
+// Search match schema — each entry in /shodan/host/search "matches" is a
+// single service observation. "data" here is the raw banner string.
+// ---------------------------------------------------------------------------
+
+const ShodanSearchMatchSchema = z.object({
+  ip_str: z.string(),
+  port: z.number(),
+  asn: z.string().nullish(),          // "AS12345" or null
+  org: z.string().nullish(),
+  country_code: z.string().nullish(),
+  hostnames: z.array(z.string()).nullish(),
+  transport: z.string().nullish(),
+  product: z.string().nullish(),
+  version: z.string().nullish(),
+  data: z.string().nullish(),          // raw banner string
+  http: ShodanHttpSchema,
+  ssl: ShodanSslSchema,
+}).passthrough();
+
+export type ShodanSearchMatch = z.infer<typeof ShodanSearchMatchSchema>;
+
+// ---------------------------------------------------------------------------
+// Host detail schema — returned by /shodan/host/:ip. "data" is an array of
+// per-service observations, each with their own banner string and SSL fields.
+// ---------------------------------------------------------------------------
+
 const ShodanServiceSchema = z.object({
   port: z.number(),
-  transport: z.string().optional(),
-  product: z.string().optional(),
-  version: z.string().optional(),
-  data: z.string().optional(),
-  // HTTP module fields
-  http: z.object({
-    title: z.string().optional(),
-    server: z.string().optional(),
-    favicon: z.object({ hash: z.number().optional() }).optional(),
-  }).optional(),
-  // SSL/TLS fields
-  ssl: z.object({
-    cert: z.object({
-      serial: z.number().optional(),
-      subject: z.record(z.string(), z.unknown()).optional(),
-      issuer: z.record(z.string(), z.unknown()).optional(),
-      fingerprint: z.object({ sha256: z.string().optional() }).optional(),
-    }).optional(),
-    jarm: z.string().optional(),
-  }).optional(),
-}).passthrough(); // Keep all extra fields in the raw banner
+  transport: z.string().nullish(),
+  product: z.string().nullish(),
+  version: z.string().nullish(),
+  data: z.string().nullish(),          // raw banner string for this service
+  http: ShodanHttpSchema,
+  ssl: ShodanSslSchema,
+}).passthrough();
 
 const ShodanHostSchema = z.object({
   ip_str: z.string(),
   port: z.number(),
-  asn: z.string().optional(),   // "AS12345"
-  org: z.string().optional(),
-  country_code: z.string().optional(),
-  hostnames: z.array(z.string()).optional(),
-  data: z.array(ShodanServiceSchema).optional(),
-  // Top-level cert fields (some endpoints hoist these)
-  ssl: z.object({
-    cert: z.object({
-      serial: z.number().optional(),
-      subject: z.record(z.string(), z.unknown()).optional(),
-      issuer: z.record(z.string(), z.unknown()).optional(),
-      fingerprint: z.object({ sha256: z.string().optional() }).optional(),
-    }).optional(),
-    jarm: z.string().optional(),
-  }).optional(),
+  asn: z.string().nullish(),
+  org: z.string().nullish(),
+  country_code: z.string().nullish(),
+  hostnames: z.array(z.string()).nullish(),
+  data: z.array(ShodanServiceSchema).nullish(), // array of services
+  ssl: ShodanSslSchema,
 }).passthrough();
 
 export type ShodanHost = z.infer<typeof ShodanHostSchema>;
 
 const ShodanSearchResultSchema = z.object({
-  matches: z.array(ShodanHostSchema),
+  matches: z.array(ShodanSearchMatchSchema),
   total: z.number(),
 });
 
