@@ -162,6 +162,21 @@ export const api = {
     pdnsForDomain: (domain: string) =>
       request<{ data: { records: ValidinRecord[] } }>(`/validin/domain/${encodeURIComponent(domain)}/pdns`),
   },
+  quota: {
+    get: () =>
+      request<{
+        data: {
+          month: string;
+          queriesUsed: number;
+          shodan: {
+            query_credits: number;
+            scan_credits: number;
+            plan: string;
+            [key: string]: unknown;
+          } | null;
+        };
+      }>('/quota'),
+  },
 };
 
 // ---------------------------------------------------------------------------

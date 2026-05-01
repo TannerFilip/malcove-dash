@@ -50,6 +50,7 @@ export function useRunQuery(id: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['queries', id] });
       qc.invalidateQueries({ queryKey: ['hosts'] });
+      qc.invalidateQueries({ queryKey: ['quota'] });
     },
   });
 }

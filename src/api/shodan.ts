@@ -123,6 +123,21 @@ export class ShodanClient {
   }
 
   /**
+   * Fetch Shodan account info — plan, remaining credits, etc.
+   * Does NOT consume query credits.
+   */
+  async getApiInfo(): Promise<Record<string, unknown>> {
+    const url = new URL(`${this.baseUrl}/api-info`);
+    url.searchParams.set('key', this.apiKey);
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Shodan API error ${res.status}: ${body}`);
+    }
+    return res.json() as Promise<Record<string, unknown>>;
+  }
+
+  /**
    * Search Shodan with a query string, paginated.
    * Each call = 1 query credit. Increments KV counter.
    */
