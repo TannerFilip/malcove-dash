@@ -3,9 +3,17 @@ import { useState, useRef, useCallback } from 'react';
 import { useHostDetail, usePatchHost } from '../hooks/useHosts';
 import { useKeyboardNav } from '../hooks/useKeyboardNav';
 import { useEnqueueEnrichment } from '../hooks/useEnrichments';
+import {
+  useHostPivots,
+  useExecutePivot,
+  useValidinPdns,
+  PIVOT_TYPES,
+  type PivotType,
+  type PivotEntry,
+} from '../hooks/usePivots';
 import { TriageBadge } from '../components/TriageBadge';
 import { JsonViewer } from '../components/JsonViewer';
-import { TRIAGE_STATES, type TriageState, type HostObservation } from '../../shared/types';
+import { TRIAGE_STATES, type TriageState, type HostObservation, type Host } from '../../shared/types';
 import { diffBanners } from '../../shared/diff';
 
 export const Route = createFileRoute('/hosts/$id')({
@@ -17,15 +25,23 @@ const TRIAGE_KEY_LABELS: Record<string, string> = {
   '4': 'dismissed', '5': 'false_positive', '6': 'monitoring', '7': 'needs_followup',
 };
 
-type Tab = 'banner' | 'changes' | 'enrichments';
+type Tab = 'banner' | 'changes' | 'enrichments' | 'pivots';
 
 function HostDetailPage() {
   const { id } = Route.useParams();
   const { data: host, isLoading, error } = useHostDetail(id);
   const patch = usePatchHost();
   const enrich = useEnqueueEnrichment(id);
+  const { data: pivotEntries = [], isLoading: pivotsLoading } = useHostPivots(id);
+  const executePivot = useExecutePivot(id);
   const notesRef = useRef<HTMLTextAreaElement>(null);
   const [activeTab, setActiveTab] = useState<Tab>('banner');
+  // Validin pDNS — only fetched once the user opens the pivots tab
+  const [pdnsEnabled, setPdnsEnabled] = useState(false);
+  const { data: pdnsRecords = [], isLoading: pdnsLoading } = useValidinPdns(
+    host?.ip ?? '',
+    pdnsEnabled && !!host?.ip,
+  );
 
   const handleTriage = useCallback(
     (state: TriageState) => {
@@ -176,6 +192,21 @@ function HostDetailPage() {
             enrichments
             <span className="ml-1 text-zinc-600">· {host.enrichments.length}</span>
           </button>
+
+          {/* pivots */}
+          <button
+            onClick={() => { setActiveTab('pivots'); setPdnsEnabled(true); }}
+            className={`pb-1 ${
+              activeTab === 'pivots'
+                ? 'border-b-2 border-purple-500 text-zinc-100'
+                : 'text-zinc-500 hover:text-zinc-300'
+            }`}
+          >
+            pivots
+            {pivotEntries.length > 0 && (
+              <span className="ml-1 text-zinc-600">· {pivotEntries.length}</span>
+            )}
+          </button>
         </div>
 
         {/* Banner tab */}
@@ -237,6 +268,18 @@ function HostDetailPage() {
               </div>
             )}
           </div>
+        )}
+
+        {/* Pivots tab */}
+        {activeTab === 'pivots' && (
+          <PivotsTab
+            host={host}
+            pivotEntries={pivotEntries}
+            pivotsLoading={pivotsLoading}
+            executePivot={executePivot}
+            pdnsRecords={pdnsRecords}
+            pdnsLoading={pdnsLoading}
+          />
         )}
 
         {/* Enrichments tab */}
@@ -335,6 +378,190 @@ function DiffValue({ value, variant }: { value: unknown; variant: 'before' | 'af
   return (
     <div className={colourClass}>
       <JsonViewer data={value as Record<string, unknown>} initialExpanded={false} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pivots tab
+// ---------------------------------------------------------------------------
+
+const PIVOT_LABELS: Record<PivotType, string> = {
+  cert_serial:   'cert serial',
+  jarm:          'JARM',
+  favicon_hash:  'favicon hash',
+  ja4x:          'JA4X',
+  asn_port:      'ASN + port',
+  cert_subject:  'cert subject CN',
+};
+
+function pivotFieldValue(host: Host, type: PivotType): string | null {
+  switch (type) {
+    case 'cert_serial':  return host.certSerial ?? null;
+    case 'jarm':         return host.jarm ?? null;
+    case 'favicon_hash': return host.faviconHash ?? null;
+    case 'ja4x':         return host.ja4x ?? null;
+    case 'asn_port':
+      return host.asn && host.port ? `AS${host.asn}:${host.port}` : null;
+    case 'cert_subject': {
+      if (!host.certSubject) return null;
+      try { return (JSON.parse(host.certSubject) as Record<string, unknown>)['CN'] as string ?? null; }
+      catch { return null; }
+    }
+  }
+}
+
+interface PivotsTabProps {
+  host: Host;
+  pivotEntries: PivotEntry[];
+  pivotsLoading: boolean;
+  executePivot: ReturnType<typeof useExecutePivot>;
+  pdnsRecords: { query?: string | null; answer?: string | null; type?: string | null; first_seen?: number | null; last_seen?: number | null }[];
+  pdnsLoading: boolean;
+}
+
+function PivotsTab({
+  host,
+  pivotEntries,
+  pivotsLoading,
+  executePivot,
+  pdnsRecords,
+  pdnsLoading,
+}: PivotsTabProps) {
+  // Group existing pivots by type for the list view
+  const byType = new Map<string, PivotEntry[]>();
+  for (const p of pivotEntries) {
+    const list = byType.get(p.pivotType) ?? [];
+    list.push(p);
+    byType.set(p.pivotType, list);
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Action buttons */}
+      <div className="space-y-1.5">
+        <p className="text-xs text-zinc-500">find related hosts via Shodan</p>
+        <div className="flex flex-wrap gap-1.5">
+          {PIVOT_TYPES.map((type) => {
+            const val = pivotFieldValue(host, type);
+            const running = executePivot.isPending && executePivot.variables === type;
+            return (
+              <button
+                key={type}
+                disabled={!val || executePivot.isPending}
+                onClick={() => executePivot.mutate(type)}
+                title={val ?? `no ${PIVOT_LABELS[type]} on this host`}
+                className={`rounded border px-2.5 py-0.5 text-xs transition-colors ${
+                  val
+                    ? 'border-zinc-700 text-zinc-400 hover:border-purple-600 hover:text-zinc-200'
+                    : 'border-zinc-800 text-zinc-700 cursor-not-allowed'
+                }`}
+              >
+                {running ? '…' : `by ${PIVOT_LABELS[type]}`}
+                {val && (
+                  <span className="ml-1.5 font-mono text-[10px] text-zinc-600">
+                    {val.length > 16 ? `${val.slice(0, 16)}…` : val}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {executePivot.isSuccess && (
+          <p className="text-xs text-purple-400">
+            Found {executePivot.data.data.found} host{executePivot.data.data.found !== 1 ? 's' : ''}
+            {' '}({executePivot.data.data.shodanTotal} total in Shodan)
+            {executePivot.data.data.newPivots > 0 && ` · ${executePivot.data.data.newPivots} new edges`}
+          </p>
+        )}
+        {executePivot.isError && (
+          <p className="text-xs text-rose-400">{(executePivot.error as Error).message}</p>
+        )}
+      </div>
+
+      {/* Pivot list */}
+      {pivotsLoading ? (
+        <p className="text-xs text-zinc-500">Loading…</p>
+      ) : pivotEntries.length === 0 ? (
+        <p className="text-xs text-zinc-600">No pivot edges recorded yet.</p>
+      ) : (
+        <div className="space-y-3">
+          {[...byType.entries()].map(([type, entries]) => (
+            <div key={type}>
+              <p className="mb-1 text-xs font-medium text-zinc-400">
+                {PIVOT_LABELS[type as PivotType] ?? type}
+                <span className="ml-1.5 font-mono text-[10px] text-zinc-600">
+                  {entries[0]?.pivotValue ?? ''}
+                </span>
+              </p>
+              <div className="space-y-1">
+                {entries.map((p) => p.relatedHost && (
+                  <div
+                    key={p.id}
+                    className="flex items-center gap-3 rounded border border-zinc-800 bg-zinc-900/50 px-3 py-1.5 text-xs"
+                  >
+                    <span className="text-zinc-500">{p.direction === 'out' ? '→' : '←'}</span>
+                    <Link
+                      to="/hosts/$id"
+                      params={{ id: p.relatedHost.id }}
+                      className="font-mono text-sky-400 hover:text-sky-300"
+                    >
+                      {p.relatedHost.ip}:{p.relatedHost.port}
+                    </Link>
+                    {p.relatedHost.hostname && (
+                      <span className="text-zinc-600">{p.relatedHost.hostname}</span>
+                    )}
+                    <span className="text-zinc-500">{p.relatedHost.org ?? '—'}</span>
+                    <TriageBadge state={p.relatedHost.triageState as Parameters<typeof TriageBadge>[0]['state']} />
+                    <span className="ml-auto text-zinc-700">
+                      {new Date(p.createdAt * 1000).toLocaleDateString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Validin pDNS */}
+      <div className="space-y-1.5">
+        <p className="text-xs text-zinc-500">passive DNS (Validin)</p>
+        {pdnsLoading ? (
+          <p className="text-xs text-zinc-500">Loading…</p>
+        ) : pdnsRecords.length === 0 ? (
+          <p className="text-xs text-zinc-600">No pDNS records found.</p>
+        ) : (
+          <div className="overflow-auto rounded border border-zinc-800">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-zinc-800 text-left text-zinc-500">
+                  <th className="px-3 py-1.5 font-normal">query</th>
+                  <th className="px-3 py-1.5 font-normal">answer</th>
+                  <th className="px-3 py-1.5 font-normal">type</th>
+                  <th className="px-3 py-1.5 font-normal">first seen</th>
+                  <th className="px-3 py-1.5 font-normal">last seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pdnsRecords.map((r, i) => (
+                  <tr key={i} className="border-b border-zinc-800/50">
+                    <td className="px-3 py-1.5 font-mono text-zinc-300">{r.query ?? '—'}</td>
+                    <td className="px-3 py-1.5 font-mono text-zinc-400">{r.answer ?? '—'}</td>
+                    <td className="px-3 py-1.5 text-zinc-500">{r.type ?? '—'}</td>
+                    <td className="px-3 py-1.5 text-zinc-600">
+                      {r.first_seen ? new Date(r.first_seen * 1000).toLocaleDateString() : '—'}
+                    </td>
+                    <td className="px-3 py-1.5 text-zinc-600">
+                      {r.last_seen ? new Date(r.last_seen * 1000).toLocaleDateString() : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

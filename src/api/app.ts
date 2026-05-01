@@ -8,6 +8,8 @@ import { hostsRouter } from './routes/hosts';
 import { runsRouter } from './routes/runs';
 import { enrichmentsRouter } from './routes/enrichments';
 import { changesRouter } from './routes/changes';
+import { pivotsRouter } from './routes/pivots';
+import { validinRouter } from './routes/validin';
 
 const api = new Hono<{ Bindings: Env }>()
   .route('/health', health)
@@ -15,7 +17,9 @@ const api = new Hono<{ Bindings: Env }>()
   .route('/hosts', hostsRouter)
   .route('/runs', runsRouter)
   .route('/enrichments', enrichmentsRouter)
-  .route('/changes', changesRouter);
+  .route('/changes', changesRouter)
+  .route('/hosts', pivotsRouter)          // POST/GET /api/hosts/:id/pivots
+  .route('/validin', validinRouter);      // GET /api/validin/ip/:ip/pdns etc.
 
 const app = new Hono<{ Bindings: Env }>()
   .use('*', logger())
