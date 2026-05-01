@@ -1,0 +1,1 @@
+ALTER TABLE `queries` ADD `max_results` integer DEFAULT 100 NOT NULL;

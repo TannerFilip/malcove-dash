@@ -49,6 +49,7 @@ export interface CreateQueryPayload {
   source: 'shodan' | 'validin';
   tags?: string[];
   schedule?: string;
+  maxResults?: number;
 }
 
 export interface RunResult {

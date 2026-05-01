@@ -8,6 +8,7 @@ export const queries = sqliteTable('queries', {
   source: text('source', { enum: ['shodan', 'validin'] }).notNull(),
   tags: text('tags', { mode: 'json' }).$type<string[]>().default([]),
   schedule: text('schedule'),                            // cron expr or null
+  maxResults: integer('max_results').notNull().default(100), // cap on hosts fetched per run
   lastRunAt: integer('last_run_at'),                     // unix seconds
   createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
 });

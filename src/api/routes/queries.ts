@@ -19,6 +19,7 @@ const CreateQuerySchema = z.object({
   source: z.enum(['shodan', 'validin']),
   tags: z.array(z.string()).optional().default([]),
   schedule: z.string().optional(),
+  maxResults: z.coerce.number().int().min(100).max(1000).default(100),
 });
 
 const MatchesQuerySchema = z.object({
@@ -198,6 +199,7 @@ queriesRouter.post('/', zValidator('json', CreateQuerySchema), async (c) => {
     source: body.source,
     tags: body.tags,
     schedule: body.schedule ?? null,
+    maxResults: body.maxResults,
     lastRunAt: null,
   };
 
@@ -355,21 +357,30 @@ queriesRouter.post('/:id/run', async (c) => {
     const now = Math.floor(Date.now() / 1000);
 
     // -----------------------------------------------------------------------
-    // Paginated fetch — up to MAX_PAGES × 100 = 1000 hosts
+    // Paginated fetch — capped at query.maxResults (default 100, max 1000)
+    // Each page = 1 Shodan query credit.
     // -----------------------------------------------------------------------
+    const maxResults = query.maxResults ?? 100;
+    const maxPages = Math.ceil(maxResults / PAGE_SIZE); // e.g. 100→1, 300→3
     let allMatches: ShodanSearchMatch[] = [];
     let shodanTotal = 0;
 
-    for (let page = 1; page <= MAX_PAGES; page++) {
+    for (let page = 1; page <= maxPages; page++) {
       const result = await shodan.searchHosts(query.queryString, { page });
 
       if (page === 1) shodanTotal = result.total;
       allMatches.push(...result.matches);
 
-      // Stop if we've collected all results or hit a partial (last) page
-      if (result.matches.length < PAGE_SIZE || allMatches.length >= shodanTotal) break;
+      // Stop when we hit the user's limit, exhaust results, or get a partial page
+      if (
+        allMatches.length >= maxResults ||
+        result.matches.length < PAGE_SIZE ||
+        allMatches.length >= shodanTotal
+      ) break;
     }
 
+    // Enforce hard cap (in case of off-by-one on page boundaries)
+    allMatches = allMatches.slice(0, maxResults);
     const truncated = shodanTotal > allMatches.length;
 
     // -----------------------------------------------------------------------
