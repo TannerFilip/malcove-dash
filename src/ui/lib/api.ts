@@ -138,4 +138,66 @@ export const api = {
         headers: { Authorization: `Bearer ${token}` },
       }),
   },
+  pivots: {
+    list: (hostId: string) =>
+      request<{ data: PivotEntry[] }>(`/hosts/${hostId}/pivots`),
+    execute: (hostId: string, pivotType: PivotType) =>
+      request<{
+        data: {
+          pivotType: string;
+          pivotValue: string;
+          shodanTotal: number;
+          found: number;
+          newPivots: number;
+          hosts: unknown[];
+        };
+      }>(`/hosts/${hostId}/pivots`, {
+        method: 'POST',
+        body: JSON.stringify({ pivotType }),
+      }),
+  },
+  validin: {
+    pdnsForIp: (ip: string) =>
+      request<{ data: { records: ValidinRecord[] } }>(`/validin/ip/${encodeURIComponent(ip)}/pdns`),
+    pdnsForDomain: (domain: string) =>
+      request<{ data: { records: ValidinRecord[] } }>(`/validin/domain/${encodeURIComponent(domain)}/pdns`),
+  },
 };
+
+// ---------------------------------------------------------------------------
+// Pivot types (mirrors src/api/routes/pivots.ts)
+// ---------------------------------------------------------------------------
+
+export const PIVOT_TYPES = ['cert_serial', 'jarm', 'favicon_hash', 'ja4x', 'asn_port', 'cert_subject'] as const;
+export type PivotType = typeof PIVOT_TYPES[number];
+
+export interface PivotRelatedHost {
+  id: string;
+  ip: string;
+  port: number;
+  hostname: string | null;
+  org: string | null;
+  asn: number | null;
+  triageState: string;
+  jarm: string | null;
+  certSerial: string | null;
+}
+
+export interface PivotEntry {
+  id: string;
+  pivotType: string;
+  pivotValue: string | null;
+  createdAt: number;
+  direction: 'out' | 'in';
+  relatedHost: PivotRelatedHost | null;
+}
+
+export interface ValidinRecord {
+  query?: string | null;
+  answer?: string | null;
+  type?: string | null;
+  first_seen?: number | null;
+  last_seen?: number | null;
+  count?: number | null;
+  [key: string]: unknown;
+}
