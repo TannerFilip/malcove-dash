@@ -2,6 +2,7 @@ import { createFileRoute, Link, Outlet, useRouterState } from '@tanstack/react-r
 import { useState } from 'react';
 import { useQueryList, useCreateQuery, useDeleteQuery } from '../hooks/useQueries';
 import { useQuota } from '../hooks/useQuota';
+import { QueryBuilder } from '../components/QueryBuilder';
 import type { Query } from '../../shared/types';
 
 export const Route = createFileRoute('/queries')({
@@ -78,15 +79,19 @@ function QueriesPage() {
   );
 }
 
+const MAX_RESULTS_OPTIONS = [100, 200, 500, 1000] as const;
+
 function CreateQueryForm({ onDone }: { onDone: () => void }) {
   const create = useCreateQuery();
   const [name, setName] = useState('');
   const [queryString, setQueryString] = useState('');
   const [source, setSource] = useState<'shodan' | 'validin'>('shodan');
+  const [maxResults, setMaxResults] = useState<100 | 200 | 500 | 1000>(100);
+  const [showBuilder, setShowBuilder] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await create.mutateAsync({ name, queryString, source });
+    await create.mutateAsync({ name, queryString, source, maxResults });
     onDone();
   }
 
@@ -118,8 +123,21 @@ function CreateQueryForm({ onDone }: { onDone: () => void }) {
           </select>
         </div>
       </div>
+
+      {/* Query string + builder toggle */}
       <div className="space-y-1">
-        <label className="text-xs text-zinc-400">Query string</label>
+        <div className="flex items-center justify-between">
+          <label className="text-xs text-zinc-400">Query string</label>
+          {source === 'shodan' && (
+            <button
+              type="button"
+              onClick={() => setShowBuilder((p) => !p)}
+              className="text-xs text-zinc-500 hover:text-zinc-300"
+            >
+              {showBuilder ? 'hide builder' : '⊞ builder'}
+            </button>
+          )}
+        </div>
         <input
           value={queryString}
           onChange={(e) => setQueryString(e.target.value)}
@@ -127,7 +145,39 @@ function CreateQueryForm({ onDone }: { onDone: () => void }) {
           placeholder='e.g. product:"Cobalt Strike Beacon" port:443'
           className="w-full rounded border border-zinc-700 bg-zinc-800 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-sky-600 focus:outline-none"
         />
+        {showBuilder && (
+          <QueryBuilder onInsert={(q) => { setQueryString(q); setShowBuilder(false); }} />
+        )}
       </div>
+
+      {/* Result limit */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <label className="text-xs text-zinc-400">
+            Max results per run
+          </label>
+          <span className="text-xs text-zinc-600">
+            = {maxResults / 100} Shodan credit{maxResults > 100 ? 's' : ''} per run
+          </span>
+        </div>
+        <div className="flex gap-1">
+          {MAX_RESULTS_OPTIONS.map((n) => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => setMaxResults(n)}
+              className={`rounded border px-3 py-0.5 text-xs transition-colors ${
+                maxResults === n
+                  ? 'border-sky-600 bg-sky-900/40 text-sky-300'
+                  : 'border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="flex justify-end gap-2">
         <button
           type="button"
@@ -161,6 +211,7 @@ function QueryTable({ queries }: { queries: Query[] }) {
           <th className="pb-1 font-normal">name</th>
           <th className="pb-1 font-normal">source</th>
           <th className="pb-1 font-normal">query</th>
+          <th className="pb-1 font-normal">limit</th>
           <th className="pb-1 font-normal">last run</th>
           <th className="pb-1 font-normal"></th>
         </tr>
@@ -181,6 +232,7 @@ function QueryTable({ queries }: { queries: Query[] }) {
             <td className="max-w-xs truncate py-1.5 pr-4 font-mono text-zinc-400">
               {q.queryString}
             </td>
+            <td className="py-1.5 pr-4 text-zinc-500">{q.maxResults ?? 100}</td>
             <td className="py-1.5 pr-4 text-zinc-500">
               {q.lastRunAt ? new Date(q.lastRunAt * 1000).toLocaleString() : '—'}
             </td>
